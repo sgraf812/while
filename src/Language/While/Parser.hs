@@ -1,15 +1,17 @@
-module Language.While.Parser where
+module Language.While.Parser
+       ( parseProgram
+       ) where
 
-import Control.Applicative
+import           Control.Applicative
 
-import           Text.Parsec.String (Parser)
-import           Text.Parsec.Language (emptyDef)
-import           Text.Parsec (letter, alphaNum)
-import Text.Parsec.Combinator (eof)
-import qualified Text.Parsec.Expr   as Ex
-import qualified Text.Parsec.Token  as Tok
+import           Text.Parsec            (alphaNum, letter, parse, ParseError)
+import           Text.Parsec.Combinator (eof)
+import qualified Text.Parsec.Expr       as Ex
+import           Text.Parsec.Language   (emptyDef)
+import           Text.Parsec.String     (Parser)
+import qualified Text.Parsec.Token      as Tok
 
-import qualified Language.While.Syntax as S
+import qualified Language.While.Syntax  as S
 
 langDef :: Tok.LanguageDef ()
 langDef = emptyDef
@@ -20,7 +22,7 @@ langDef = emptyDef
         , Tok.identStart      = letter
         , Tok.identLetter     = alphaNum
         , Tok.reservedNames   = ["if", "then", "else", "while", "do", "true", "false", "skip"]
-        , Tok.reservedOpNames = ["&&", "==", "<=", "not", "-", "+", "*", ":="]
+        , Tok.reservedOpNames = ["&&", "||", "==", "<=", "not", "-", "+", "*", ":="]
         , Tok.caseSensitive   = True
         }
 
@@ -54,40 +56,70 @@ contents p = do
   eof
   return r
 
+prefix op f = Ex.Prefix (reservedOp op >> return f)
 
-infixOp :: String -> (S.AExp -> S.AExp -> S.AExp) -> Parser S.AExp
-infixOp op ctor = do
-  lhs <- aexp
-  reservedOp op
-  rhs <- aexp
-  return (ctor lhs rhs)
+binary op f = Ex.Infix (reservedOp op >> return f) Ex.AssocLeft
 
 aexp :: Parser S.AExp
 aexp = Ex.buildExpressionParser table term
   where
     table =
-      [ [prefix "-" (S.Minus (S.Lit 0))]
-      , [binary "*" S.Multiply]
-      , [binary "-" S.Minus, binary "+" (\l r -> l `S.Minus` (S.Lit 0 `S.Minus` r))]
+      [ [ prefix "-" (S.Minus (S.Lit 0)) ]
+      , [ binary "*" S.Multiply ]
+      , [ binary "-" S.Minus, binary "+" (\l r -> l `S.Minus` (S.Lit 0 `S.Minus` r)) ]
       ]
-    prefix op f = Ex.Prefix (reservedOp op >> return f)
-    binary op f = Ex.Infix (reservedOp op >> return f) Ex.AssocLeft
     term =  parens aexp
         <|> S.Lit <$> int
         <|> S.Var <$> identifier
 
-{-
-bexp :: Parser S.BExp
-bexp =  tr
-    <|> fl
-    <|> leq
-    <|> not
-    <|> and
-  where
-    tr = reserved "true" *> pure S.Tr
-    fl = reserved "false" *> pure (S.Not S.Tr)
-    leq = infixOp "<=" S.LEQ
-    not = do
-      reservedOp "not"
 
--}
+bexp :: Parser S.BExp
+bexp = Ex.buildExpressionParser table vals
+  where
+    table =
+      [ [ prefix "not" S.Not ]
+      , [ binary "&&" S.And ]
+      , [ binary "||" (\l r -> S.Not (S.And (S.Not l) (S.Not r))) ]
+      ]
+    vals =  (reserved "true" >> return S.Tr)
+        <|> (reserved "false" >> return (S.Not S.Tr))
+        <|> cmp "<=" S.LEQ
+        <|> cmp "==" (\l r -> S.And (S.LEQ l r) (S.LEQ r l))
+    cmp op f = do
+      l <- aexp
+      reservedOp op
+      r <- aexp
+      return (f l r)
+
+
+com :: Parser S.Com
+com = Ex.buildExpressionParser table atoms
+  where
+    table = [ [ Ex.Infix (reservedOp ";" >> return S.Sequence) Ex.AssocRight ] ]
+    atoms =  (reserved "skip" >> return S.Skip)
+         <|> assignment
+         <|> ifThenElse
+         <|> while
+    assignment = do
+      name <- identifier
+      reservedOp ":="
+      val <- aexp
+      return (S.Assignment name val)
+    ifThenElse = do
+      reserved "if"
+      cond <- parens bexp
+      reserved "then"
+      then' <- com
+      reserved "else"
+      else' <- com
+      return (S.If cond then' else')
+    while = do
+      reserved "while"
+      cond <- parens bexp
+      reserved "do"
+      body <- com
+      return (S.While cond body)
+
+
+parseProgram :: String -> Either ParseError S.Com
+parseProgram s = parse (contents com) "program" s
