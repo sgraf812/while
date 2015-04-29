@@ -1,8 +1,11 @@
 module Language.While.Parser where
 
+import Control.Applicative
+
 import           Text.Parsec.String (Parser)
 import           Text.Parsec.Language (emptyDef)
 import           Text.Parsec (letter, alphaNum)
+import Text.Parsec.Combinator (eof)
 import qualified Text.Parsec.Expr   as Ex
 import qualified Text.Parsec.Token  as Tok
 
@@ -33,11 +36,14 @@ reserved = Tok.reserved lexer
 reservedOp :: String -> Parser ()
 reservedOp = Tok.reservedOp lexer
 
+identifier :: Parser String
+identifier = Tok.identifier lexer
+
 whiteSpace :: Parser ()
 whiteSpace = Tok.whiteSpace lexer
 
 int :: Parser Int
-int = Tok.int lexer
+int = fromIntegral <$> Tok.integer lexer
 
 
 contents :: Parser a -> Parser a
@@ -45,7 +51,7 @@ contents p = do
   whiteSpace
   r <- p
   whiteSpace
-  P.eof
+  eof
   return r
 
 
@@ -56,21 +62,21 @@ infixOp op ctor = do
   rhs <- aexp
   return (ctor lhs rhs)
 
-
 aexp :: Parser S.AExp
-aexp =  int
-    <|> variable
-    <|> minus
-    <|> plus
-    <|> multiply
+aexp = Ex.buildExpressionParser table term
   where
-    literal = S.Lit <$> int
-    variable = S.Var <$> string
-    minus = infixOp "-" S.Minus
-    plus = infixOp "+" $ \l r -> l `S.Minus` (Lit 0 `S.Minus` r)
-    multiply = infixOp "*" S.Multiply
+    table =
+      [ [prefix "-" (S.Minus (S.Lit 0))]
+      , [binary "*" S.Multiply]
+      , [binary "-" S.Minus, binary "+" (\l r -> l `S.Minus` (S.Lit 0 `S.Minus` r))]
+      ]
+    prefix op f = Ex.Prefix (reservedOp op >> return f)
+    binary op f = Ex.Infix (reservedOp op >> return f) Ex.AssocLeft
+    term =  parens aexp
+        <|> S.Lit <$> int
+        <|> S.Var <$> identifier
 
-
+{-
 bexp :: Parser S.BExp
 bexp =  tr
     <|> fl
@@ -83,5 +89,5 @@ bexp =  tr
     leq = infixOp "<=" S.LEQ
     not = do
       reservedOp "not"
-       
-    
+
+-}
